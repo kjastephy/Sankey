@@ -1,0 +1,544 @@
+{
+  "$schema": "https://vega.github.io/schema/vega/v5.0.json",
+  
+  // interrogation ES en fonction de la plage de temps et de la chaîne de filtre //actuellement sélectionnées
+  "data": [
+    {
+      "name": "rawData",
+      "url": {
+      // utilisation des filtres des requetes du dashboard 
+        %context%: true
+        // utilisation des filtres temporel du dashboard
+        %timefield%: "time_field"
+        "index": "index_file",
+        "body": {
+          "aggs": {
+            "source": {
+              "terms": {
+                "field": "source1"
+              },
+              "aggs": {
+                "stk2": {
+                  "terms": {"field": "stack2"},
+                  aggs: {
+                    stk3: {
+                      terms: {
+                        field: "stack3"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "size": 0
+      },
+      "format": {"property": "aggregations.source.buckets"},
+      "transform": [
+        {"type": "flatten", "fields": ["stk2.buckets"], "as": ["flat1"]},
+        {"type": "flatten", "fields": ["flat1.stk3.buckets"], "as": ["flat2"]},
+        {"type": "formula", "expr": "datum.key", "as": "stk1"},
+        {"type": "formula", "expr": "datum.flat1.key", "as": "stk2"},
+        {"type": "formula", "expr": "datum.flat2.key", "as": "stk3"},
+         {"type": "formula", "expr": "datum.flat1.doc_count", "as": "size1"}
+        {"type": "formula", "expr": "datum.flat2.doc_count", "as": "size2"}
+      ] 
+    },
+    
+    {
+      "name": "nodes",
+      "source": "rawData",
+      "transform": [
+      // lorsqu'un champ est sélectionné, filtrage des données non liées
+        {
+          "type": "filter",
+          "expr": "!groupSelector || groupSelector.stk1 == datum.stk1 || groupSelector.stk2 == datum.stk2 || groupSelector.stk3 == datum.stk3"
+        },
+        
+        // Définir une nouvelle clé pour les recherches ultérieures - identifier chaque nœud
+        {
+          "type": "formula",
+          "expr": "datum.stk1+datum.stk2+datum.stk3",
+          "as": "key"
+        },
+         {
+          "type": "formula",
+          "expr": "datum.stk1+datum.stk2+datum.stk3",
+          "as": "key2"
+        },
+        {
+          "type": "fold",
+          "fields": ["stk1", "stk2", "stk3"],
+          "as": ["stack", "grpId"]
+        },
+        /* Création d'une clé de tri, différente pour les piles stk1,stk2 et stk3.
+         Le séparateur d'espace garantit un ordre de tri correct dans certains cas d'angle. */
+         {
+          "type": "formula",
+          "expr": "datum.stack == 'stk1' ? datum.stk1+datum.stk2 : datum.stk2+datum.stk1",
+          "as": "sortField2"
+        },
+         {
+          "type": "formula",
+          "expr": "datum.stack == 'stk2' ? datum.stk2+datum.stk3 : datum.stk3+datum.stk2",
+          "as": "sortField1"
+        },
+        
+       
+        /* Calcule les positions y0 et y1 pour empiler les nœuds les uns sur les autres, indépendamment pour chaque pile, et en s'assurant qu'elles sont dans le bon ordre alphabétique à partir du haut (inversé sur l'axe y)
+        */
+        {
+          "type": "stack",
+          "groupby": ["stack"],
+          "sort": {"field": "sortField1", "order": "descending"},
+          "field": "size2"
+        },
+        {
+          "type": "stack",
+          "groupby": ["stack"],
+          "sort": {"field": "sortField2", "order": "descending"},
+          "field": "size2"
+        },
+      // calcul du point central vertical pour chaque nœud, utilisé pour dessiner //les bords
+
+        {"type": "formula", "expr": "(datum.y0+datum.y1)/2", "as": "yc"}
+      ]
+    },
+    // combiner tous les nœuds en groupes d'opérateurs, en résumant le nombre
+    // de CDR associés
+    {
+      "name": "groups",
+      "source": "nodes",
+      "transform": [
+        {
+          "type": "aggregate",
+          "groupby": ["stack", "grpId"],
+          "fields": ["size2"],
+          "ops": ["sum"],
+          "as": ["total"]
+        },
+        // recalcul de l'empilement des valeurs y0,y1
+        {
+          "type": "stack",
+          "groupby": ["stack"],
+          "sort": {"field": "grpId", "order": "descending"},
+          "field": "total"
+        },
+        /*  projection des valeurs y0 et y1 sur les coordonnées de l'écran.
+        le faire une fois ici au lieu de le faire plusieurs fois dans les "marks"
+        */
+        {"type": "formula", "expr": "scale('y', datum.y0)", "as": "scaledY0"},
+        {"type": "formula", "expr": "scale('y', datum.y1)", "as": "scaledY1"},
+         
+        // drapeau booléen si l'étiquette doit être à droite de la pile
+        {
+          "type": "formula",
+          "expr": "datum.stack == 'stk1'",
+          "as": "rightLabel"
+        },
+        
+       
+        /* Calcul du pourcentage de trafic pour l'operateur selectionné en utilisant l'échelle  "y" qui est la limite supérieure du domaine et qui représente le trafic total
+        */
+        {
+          "type": "formula",
+          "expr": "datum.total/domain('y')[1]",
+          "as": "percentage"
+        }
+      ]
+    },
+    // table de recherche temporaire avec tous les nœuds de pile 'stk2'
+    {
+      "name": "destinationNodes",
+      "source": "nodes",
+      "transform": [{"type": "filter", "expr": "datum.stack == 'stk2'"}]
+    },
+    // table de recherche temporaire avec tous les nœuds de pile 'stk3'
+    {
+      "name": "destinationNodes2",
+      "source": "nodes",
+      "transform": [{"type": "filter", "expr": "datum.stack == 'stk3'"}]
+    },
+    {
+      "name": "edges",
+      "source": "nodes",
+      "transform": [
+      // nous ne voulons que des nœuds de la pile de gauche (les opérateurs)
+        {"type": "filter", "expr": "datum.stack == 'stk1'"},
+      
+      // On trouve le nœud correspondant dans la bonne pile puis on le garde comme /"cible"
+        {
+          "type": "lookup",
+          "from": "destinationNodes",
+          "key": "key",
+          "fields": ["key"],
+          "as": ["target"]
+        },
+        // on calcule le chemin du lien entre les piles stk1 et stk2 pour la paire // de nœuds
+        {
+          "type": "linkpath",
+          "orient": "horizontal",
+          "shape": "diagonal",
+          "sourceY": {"expr": "scale('y', datum.yc)"},
+          "sourceX": {"expr": "scale('x', 'stk1') + bandwidth('x')"},
+          "targetY": {"expr": "scale('y', datum.target.yc)"},
+          "targetX": {"expr": "scale('x', 'stk2')"}
+        },
+        /* calcul de l'épaisseur du trait:
+         La valeur doit être la même que la hauteur du nœud, mais mise à l'échelle
+         La taille de la hauteur de l'écran donne une valeur inversée
+         La coordonnée va du haut vers le bas, alors que le Y=0 du graphique
+         est en bas. Donc, en soustrayant le nombre de CDR à l'échelle de la hauteur de l'écran (qui est la borne "inférieure" de l'échelle "y") on obtient la bonne valeur
+        */
+        {
+          "type": "formula",
+          "expr": "range('y')[0]-scale('y', datum.size2)",
+          "as": "strokeWidth"
+        },
+        // L'info-bulle a besoin du pourcentage de lien individuel de tout le trafic
+        {
+          "type": "formula",
+          "expr": "datum.size2/domain('y')[1]",
+          "as": "percentage"
+        }
+      ]
+    },
+    
+    {
+      "name": "edges2",
+      "source": "nodes",
+      "transform": [
+      //nous ne voulons que des nœuds de la pile de gauche (destination_pays)
+        {"type": "filter", "expr": "datum.stack == 'stk2'"},
+        //On trouve le nœud correspondant dans la bonne pile et on le garde comme
+        //"cible"
+        {
+          "type": "lookup",
+          "from": "destinationNodes2",
+          "key": "key2",
+          "fields": ["key2"],
+          "as": ["target2"]
+        },
+        // On calcul le chemin du lien entre les piles stk2 et stk3
+        {
+          "type": "linkpath",
+          "orient": "horizontal",
+          "shape": "diagonal",
+          "sourceY": {"expr": "scale('y', datum.yc)"},
+          "sourceX": {"expr": "scale('x', 'stk2') + bandwidth('x')"},
+          "targetY": {"expr": "scale('y', datum.target2.yc)"},
+          "targetX": {"expr": "scale('x', 'stk3')"}
+        },
+        /* calcul de l'épaisseur du trait:
+         La valeur doit être la même que la hauteur du nœud, mais mise à l'échelle
+         La taille de la hauteur de l'écran donne une valeur inversée
+         La coordonnée va du haut vers le bas, alors que le Y=0 du graphique
+         est en bas. Donc, en soustrayant le nombre de CDR à l'échelle de la hauteur de l'écran (qui est la borne "inférieure" de l'échelle "y") on obtient la bonne valeur
+        */
+        {
+          "type": "formula",
+          "expr": "range('y')[0]-scale('y', datum.size2)",
+          "as": "strokeWidth"
+        },
+        // L'info-bulle a besoin du pourcentage de lien individuel de tout le trafic
+        {
+          "type": "formula",
+          "expr": "datum.size2/domain('y')[1]",
+          "as": "percentage"
+        }
+      ]
+    }
+  ],
+  "scales": [
+  // calcul du positionnement horizontal de la pile
+    {
+      "name": "x",
+      "type": "band",
+      "range": "width",
+      "domain": ["stk1", "stk2", "stk3"],
+      "paddingOuter": 0.02,
+      "paddingInner": 0.97,
+      // "padding":0.9
+    },
+    // cette échelle monte jusqu'à la valeur y1 la plus élevée de tous les nœuds
+    {
+      "name": "y",
+      "type": "linear",
+      "range": "height",
+      "domain": {"data": "nodes", "field": "y1"}
+    },
+    // utilisation de rawData pour s'assurer que les couleurs restent les mêmes lors // du clic.
+    {
+      "name": "color",
+      "type": "ordinal",
+      "range": "category",
+      "domain": {"data": "rawData", "fields": ["stk1", "stk2", "stk3"]}
+    },
+    // cette échelle est utilisée pour mapper les identifiants internes (stk1, stk2, // stk3)
+    {
+      "name": "stackNames",
+      "type": "ordinal",
+      "range": ["Source", "Stack1", "Stack2"],
+      "domain": ["stk1", "stk2", "stk3"]
+    }
+  ],
+  "axes": [
+  // L'axe des x doit utiliser le format d'étiquette personnalisé pour afficher les //noms de pile appropriés
+    {
+      "orient": "bottom",
+      "scale": "x",
+      "encode": { 
+        "labels": {
+          "update": {"text": {"scale": "stackNames", "field": "value"}}
+        }
+      }
+    },
+    {"orient": "left", "scale": "y"}
+  ],
+  "marks": [
+  // dessine la ligne de connexion entre les piles
+    {
+      "type": "path",
+      "name": "edgeMark",
+      "from": {"data": "edges"},
+      // Le "clip" évite certains problèmes de dimensionnement automatique lors une // grande largeur de trait pour les chemins. paramètre facultatif
+      "clip": true,
+      "encode": {
+        "update": 
+        {
+        /* Par défaut, on utilise la couleur du nœud de gauche, sauf lors de l'affichage du trafic d'un seul opérateur, auquel cas on utilise la couleur de destination_Pays.
+        */
+          "stroke": [
+            {
+              "test": "groupSelector && groupSelector.stack=='stk1'",
+              "scale": "color",
+              "field": "stk2"
+            },
+            {"scale": "color", "field": "stk1"}
+           
+         ],
+          "strokeWidth": {"field": "strokeWidth"},
+          "path": {"field": "path"},
+          // lors de l'affichage de tout le trafic et du survol d'un pays,
+          // met en évidence le trafic provenant de cet opérateur.
+          "strokeOpacity": {
+            "signal": "!groupSelector && (groupHover.stk1 == datum.stk1 || groupHover.stk2 == datum.stk2 ) ? 0.9 : 0.3"
+          },
+          
+          // s'assurer  que les arêtes sélectionnées au survol s'affichent en haut
+          "zindex": {
+            "signal": "!groupSelector && (groupHover.stk1 == datum.stk1 || groupHover.stk2 == datum.stk2) ? 1 : 0"
+          },
+          // formatage de la chaîne de l'info-bulle
+          "tooltip": {
+            "signal": "datum.stk1 + ' → ' + datum.stk2 + '    ' + format(datum.size2, ',.0f') + '   (' + format(datum.percentage, '.1%') + ')'"
+          }
+        },
+        // Surlignement simple au survol d'une seule ligne
+        "hover": {"strokeOpacity": {"value": 0.75}}
+      }
+    },
+    // dessine la ligne de connexion entre les piles
+    {
+      "type": "path",
+      "name": "edgeMark2",
+      "from": {"data": "edges2"},
+      //évite certains problèmes de dimensionnement automatique avec une grande //largeur de trait pour les chemins
+      "clip": true,
+      "encode": {
+        "update": {
+        // Par défaut, utilisez la couleur du nœud de gauche, sauf lors de l'affichage du trafic d'un seul pays, auquel cas utiliser la couleur de la // destination_commerciale.
+          "stroke": [
+            {
+              "test": "groupSelector && groupSelector.stack=='stk2'",
+              "scale": "color",
+              "field": "stk3"
+            },
+            {"scale": "color", "field": "stk2"}
+          ],
+          "strokeWidth": {"field": "strokeWidth"},
+          "path": {"field": "path"},
+           // lors de l'affichage de tout le trafic et du survol d'un pays,
+          // met en évidence le trafic provenant de ce pays.
+          "strokeOpacity": {
+            "signal": "!groupSelector && (groupHover.stk2 == datum.stk2 || groupHover.stk3 == datum.stk3) ? 0.9 : 0.3"
+          },
+          // S'assurer que les arêtes sélectionnées au survol s'affichent en haut
+          "zindex": {
+            "signal": "!groupSelector && (groupHover.stk2 == datum.stk2 || groupHover.stk3 == datum.stk3) ? 1 : 0"
+          },
+          // formatage de la chaîne de l'info-bulle
+          "tooltip": {
+            "signal": "datum.stk2 + ' → ' + datum.stk3 + '    ' + format(datum.size2, ',.0f') + '   (' + format(datum.percentage, '1%') + ')'"
+          }
+        },
+        // Surlignement simple au survol d'une seule ligne
+        "hover": {"strokeOpacity": {"value": 0.75}}
+      }
+    },
+    // dessine des groupes de pile
+    
+    {
+      "type": "rect",
+      "from": {"data": "nodes"},
+      "encode": {
+        "enter": {
+             "strokeWidth": {"value": 1},
+          "width": {"scale": "x", "band": 1},
+          "x": {"scale": "x", "field": "stack"},
+          "y": {"field": "y0", "scale": "y"},
+          "y2": {"field": "y1", "scale": "y"}
+    }
+    }}
+    {
+      "type": "rect",
+      "name": "groupMark",
+      "from": {"data": "groups"},
+      "encode": {
+        "enter": {
+          "fill": {"scale": "color", "field": "grpId"},
+          "width": {"scale": "x", "band": 1}
+        },
+        "update": {
+          "x": {"scale": "x", "field": "stack"},
+          "y": {"field": "scaledY0"},
+          "y2": {"field": "scaledY1"},
+          "fillOpacity": {"value": 1},
+          "tooltip": {
+            "signal": "datum.grpId + ': ' + format(datum.total, ',.0f') + '   (' + format(datum.percentage, '.1%') + ')'"
+          }
+        },
+        "hover": {"fillOpacity": {"value": 1}}
+      }
+    },
+    // dessine des étiquettes de code de operateur sur le côté intérieur de la pile
+    {
+      "type": "text",
+      "from": {"data": "groups"},
+      // ne pas traiter les événements pour les étiquettes - sinon le survol de la // ligne n'est pas ok
+      "interactive": false,
+      "encode": {
+        "update": {
+        // en fonction de la pile dont il s'agit, positionner x avec un peu de //rembourrage
+          "x": {
+            "signal": "scale('x', datum.stack) + (datum.rightLabel ? bandwidth('x') + 8 : -8)"
+          },
+          // milieu du groupe
+          "yc": {"signal": "(datum.scaledY0 + datum.scaledY1)/2"},
+          "align": {"signal": "datum.rightLabel ? 'left' : 'right'"},
+          "baseline": {"value": "middle"},
+          "fontWeight": {"value": "bold"},
+          "fontSize": {"value": 9},
+          // n'affiche l'étiquette de texte que si la hauteur du groupe est suffisamment grande
+          "text": {
+            "signal": "abs(datum.scaledY0-datum.scaledY1) > 9 ? datum.grpId : ''"
+          }
+        }
+      }
+    },
+    // Créer un bouton  qui affiche tout uniquement lorsqu'un opérateur,
+     //dest_com ou pays est sélectionné. permet aussi un retour au graphique initial
+    {
+      "type": "group",
+      "data": [
+      /* Nous devons faire en sorte que le bouton s'affiche uniquement lorsque le signal groupSelector est vrai.
+         Chaque "mark" est dessinée autant de fois qu'il y a d'éléments dans les données de support. Ce qui signifie que si la liste de valeurs est vide, elle ne sera pas dessinée. Ici, je crée une source de données avec un objet vide et filtre cette liste basé sur la valeur du signal. Cela ne peut se faire qu'en groupe.
+         */
+        {
+          "name": "dataForShowAll",
+          "values": [{}],
+          "transform": [{"type": "filter", "expr": "groupSelector"}]
+        }
+      ],
+      // Définit la taille et le positionnement du bouton
+      "encode": {
+        "enter": {
+          "xc": {"signal": "width/1.85"},
+          "y": {"value": 0},
+          "width": {"value": 65},
+          "height": {"value": 25}
+        }
+      },
+      "marks": [
+      // Ce groupe est affiché sous la forme d'un bouton aux coins arrondis.
+        {
+          "type": "group",
+          // le nom de la "mark" permet la capture du signal
+          "name": "groupReset",
+           // N'affiche le bouton que si dataForShowAll a des valeurs.
+          "from": {"data": "dataForShowAll"},
+          "encode": {
+            "enter": {
+              "cornerRadius": {"value": 3.5},
+              "fill": {"value": "#666666"},
+              // utilise la taille du groupe parent
+              "height": {"field": {"group": "height"}},
+              "width": {"field": {"group": "width"}}
+            },
+            // les groupes sont transparents par défaut
+            "update": {"opacity": {"value": 1}},
+            "hover": {"fill": {"value": "#444444"}}
+          },
+          "marks": [
+            {
+              "type": "text",
+    // si vrai, cela empêchera de cliquer sur le bouton lorsqu'il est sur du texte.
+              "interactive": false,
+              "encode": {
+                "enter": {
+                // Centrer le texte dans le groupe parent
+                  "xc": {"field": {"group": "width"}, "mult": 0.5},
+                  "yc": {
+                    "field": {"group": "height"},
+                    "mult": 0.5,
+                    "offset": 1
+                  },
+                  "align": {"value": "center"},
+                  "baseline": {"value": "middle"},
+                  "text": {"value": "Show All"},
+                  "fontSize": {"value": 14},
+                  "stroke": {"value": "#ecf0f1"}
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "signals": [
+  // utilisé pour mettre en évidence le trafic vers/depuis le même opérateur
+    {
+      "name": "groupHover",
+      "value": {},
+      "on": [
+        {
+          "events": "@groupMark:mouseover",
+          "update": "{stk1:datum.stack=='stk1' && datum.grpId, stk2:datum.stack=='stk2' && datum.grpId, stk3:datum.stack=='stk3' && datum.grpId}"
+        },
+        {"events": "mouseout", "update": "{}"}
+      ]
+    },
+    // permet de filtrer uniquement les données relatives au pays sélectionné
+    {
+      "name": "groupSelector",
+      "value": false,
+      "on": [
+      // Cliquer sur groupMark définit ce signal sur les valeurs du filtre
+        {
+          "events": "@groupMark:click!",
+          "update": "{stack:datum.stack, stk1:datum.stack=='stk1' && datum.grpId, stk2:datum.stack=='stk2' && datum.grpId, stk3:datum.stack=='stk3' && datum.grpId}"
+        },
+        // Cliquer sur le bouton "afficher tout" ou double-cliquer n'importe où le //réinitialise
+        {
+          "events": [
+            {"type": "click", "markname": "groupReset"},
+            {"type": "dblclick"}
+          ],
+          "update": "false"
+        }
+      ]
+    }
+  ]
+}
