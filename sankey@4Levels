@@ -6,83 +6,58 @@
     {
       name: rawData
       url: {
-        // Apply dashboard context filters when set
-        %context%: true
-        // Filter the time picker (upper right corner) with this field
-        %timefield%: "your_time_field"
-        index: "put_your_index_here"
+         %context%: true
+        %timefield%: DEBUT_APPEL
+        index: *yOURiNDEXhERE*
         body: {
           size: 0
           aggs: {
-            table: {
-              composite: {
-                size: 100
-                sources: [
-                  {
-                    stk1: {
+            
+                sources: {
+              "terms": {
+                "field": "OPERATEUR.ENTRANT"
+              },
+              "aggs": {
+                "destination": {
+                  "terms": {"field": "OPERATEUR.SORTANT"},
+                  aggs: {
+                    com: {
                       terms: {
-                        field: stack1
+                        field: "PAYS"
+                      }
+                  aggs:{
+                    pays: {
+                      terms: {
+                        field: "DESTINATION_COMMERCIALE"
                       }
                     }
                   }
-                  {
-                    stk2: {
-                      terms: {
-                        field: stack2
-                      }
                     }
                   }
-                  {
-                    stk3: {
-                      terms: {
-                        field: stack3
-                      }
-                    }
-                  }
-                  {
-                    stk4: {
-                      terms: {
-                        field: stack4
-                      }
-                    }
-                  }
-                ]
+                }
+              }
+            }
+            
               }
             }
           }
-        }
-      }
-      // From the result, take just the data we are interested in
+      // From the result, take just the data we are
+      //interested in
       format: {
-        property: aggregations.table.buckets
+        property: aggregations.sources.buckets
       }
       // Convert key.stk1 -> stk1 for simpler access below
       transform: [
-        {
-          type: formula
-          expr: datum.key.stk1
-          as: stk1
-        }
-        {
-          type: formula
-          expr: datum.key.stk2
-          as: stk2
-        }
-        {
-          type: formula
-          expr: datum.key.stk3
-          as: stk3
-        }
-        {
-          type: formula
-          expr: datum.key.stk4
-          as: stk4
-        }
-        {
-          type: formula
-          expr: datum.doc_count
-          as: size
-        }
+        {"type": "flatten", "fields": ["destination.buckets"], "as": ["flat1"]},
+        {"type": "flatten", "fields": ["flat1.com.buckets"], "as": ["flat2"]},
+        {"type": "flatten", "fields": ["flat2.pays.buckets"], "as": ["flat3"]},
+        {"type": "formula", "expr": "datum.key", "as": "stk1"},
+        {"type": "formula", "expr": "datum.flat1.key", "as": "stk2"},
+        {"type": "formula", "expr": "datum.flat2.key", "as": "stk3"},
+        {"type": "formula", "expr": "datum.flat3.key", "as": "stk4"},
+         {"type": "formula", "expr": "datum.flat1.doc_count", "as": "size3"}
+        {"type": "formula", "expr": "datum.flat2.doc_count", "as": "size2"}
+        {"type": "formula", "expr": "datum.flat3.doc_count", "as": "size"}
       ]
     }
     {
@@ -97,18 +72,8 @@
         // Set new key for later lookups - identifies each node
         {
           type: formula
-          expr: datum.stk1+datum.stk2
+          expr: datum.stk1+datum.stk2+datum.stk3+datum.stk4
           as: key
-        }
-        {
-          type: formula
-          expr: datum.stk2+datum.stk3
-          as: key2
-        }
-        {
-          type: formula
-          expr: datum.stk3+datum.stk4
-          as: key3
         }
         
         // instead of each table row, create two new rows,
@@ -129,21 +94,7 @@
         }
         // Create a sortkey, different for stk1 and stk2 stacks.
         // Space separator ensures proper sort order in some corner cases.
-        {
-          type: formula
-          expr: datum.stack == 'stk1' ? datum.stk1+' '+datum.stk2:datum.stk2+' '+datum.stk1
-          as: sortField
-        }
-        {
-          type: formula
-          expr: datum.stack == 'stk2' ? datum.stk2+' '+datum.stk3:datum.stk3+' '+datum.stk2
-          as: sortField2
-        }
-        {
-          type: formula
-          expr: datum.stack == 'stk3' ? datum.stk3+' '+datum.stk4:datum.stk4+' '+datum.stk3
-          as: sortField3
-        }
+        
         // Calculate y0 and y1 positions for stacking nodes one on top of the other,
         // independently for each stack, and ensuring they are in the proper order,
         // alphabetical from the top (reversed on the y axis)
@@ -153,12 +104,7 @@
             stack
           ]
           sort: {
-            fields: [
-            sortField
-            sortField2
-            sortField3
-            ]
-            order: descending
+            field: grpId
           }
           field: size
         }
@@ -200,7 +146,7 @@
           ]
           sort: {
             field: grpId
-            order: descending
+            order: "null"
           }
           field: total
         }
@@ -217,7 +163,7 @@
           as: scaledY1
         }
         // boolean flag if the label should be on the right of the stack
-    
+       {type: "formula", expr: "datum.stack == 'stk1'", as: "rightLabel"}
         // Calculate traffic percentage for this country using "y" scale
         // domain upper bound, which represents the total traffic
         {
@@ -335,12 +281,12 @@
         {
           type: lookup
           from: destinationNodes2
-          key: key2
+          key: key
           fields: [
-            key2
+            key
           ]
           as: [
-            target2
+            target
           ]
         }
         
@@ -356,7 +302,7 @@
             expr: scale('x', 'stk2') + bandwidth('x')
           }
           targetY: {
-            expr: scale('y', datum.target2.yc)
+            expr: scale('y', datum.target.yc)
           }
           targetX: {
             expr: scale('x', 'stk3')
@@ -396,12 +342,12 @@
         {
           type: lookup
           from: destinationNodes3
-          key: key3
+          key: key
           fields: [
-            key3
+            key
           ]
           as: [
-            target3
+            target
           ]
         }
         
@@ -417,7 +363,7 @@
             expr: scale('x', 'stk3') + bandwidth('x')
           }
           targetY: {
-            expr: scale('y', datum.target3.yc)
+            expr: scale('y', datum.target.yc)
           }
           targetX: {
             expr: scale('x', 'stk4')
@@ -475,7 +421,7 @@
       type: ordinal
       range: category
       domain: {
-        data: nodes
+        data: rawData
         fields: [
           stk1
           stk2
@@ -591,7 +537,7 @@
           // from just one country, in which case use destination color.
           stroke: [
             {
-              test: groupSelector && groupSelector.stack=='stk3'
+              test: groupSelector && groupSelector.stack=='stk2'
               scale: color
               field: stk3
             }
@@ -609,7 +555,7 @@
           // when showing all traffic, and hovering over a country,
           // highlight the traffic from that country.
           strokeOpacity: {
-            signal: !groupSelector && (groupHover.stk3 == datum.stk3 || groupHover.stk3 == datum.stk3) ? 0.9 : 0.3
+            signal: !groupSelector && (groupHover.stk2 == datum.stk2 || groupHover.stk3 == datum.stk3) ? 0.9 : 0.3
           }
           // Ensure that the hover-selected edges show on top
           zindex: {
@@ -643,7 +589,7 @@
           // from just one country, in which case use destination color.
           stroke: [
             {
-              test: groupSelector && groupSelector.stack=='stk4'
+              test: groupSelector && groupSelector.stack=='stk3'
               scale: color
               field: stk4
             }
@@ -665,7 +611,7 @@
           }
           // Ensure that the hover-selected edges show on top
           zindex: {
-            signal: !groupSelector && (groupHover.stk3 == datum.stk2 || groupHover.stk3 == datum.stk4) ? 1 : 0
+            signal: !groupSelector && (groupHover.stk3 == datum.stk3 || groupHover.stk4 == datum.stk4) ? 1 : 0
           }
           // format tooltip string
           tooltip: {
@@ -710,7 +656,7 @@
             field: scaledY1
           }
           fillOpacity: {
-            value: 0.6
+            value: 0.9
           }
           tooltip: {
             signal: datum.grpId + '   ' + format(datum.total, ',.0f') + '   (' + format(datum.percentage, '.1%') + ')'
@@ -747,12 +693,13 @@
           baseline: {
             value: middle
           }
+          "fontSize": {"value": 9},
           fontWeight: {
             value: bold
           }
           // only show text label if the group's height is large enough
           text: {
-            signal: abs(datum.scaledY0-datum.scaledY1) > 13 ? datum.grpId : ''
+            signal: abs(datum.scaledY0-datum.scaledY1) > 9 ? datum.grpId : ''
           }
         }
       }
@@ -787,13 +734,13 @@
             signal: width/2
           }
           y: {
-            value: 30
+            value: 0
           }
           width: {
-            value: 80
+            value: 65
           }
           height: {
-            value: 30
+            value: 25
           }
         }
       }
@@ -836,12 +783,12 @@
             update: {
               // groups are transparent by default
               opacity: {
-                value: 1
+                value: 0.9
               }
             }
             hover: {
               opacity: {
-                value: 0.7
+                value: 0.8
               }
             }
           }
@@ -864,7 +811,7 @@
                       group: height
                     }
                     mult: 0.5
-                    offset: 2
+                    offset: 1
                   }
                   align: {
                     value: center
