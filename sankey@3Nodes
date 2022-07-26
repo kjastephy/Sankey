@@ -8,22 +8,22 @@
       "url": {
       // utilisation des filtres des requetes du dashboard 
         %context%: true
-        // utilisation des filtres temporel du dashboard
-        %timefield%: "time_field"
-        "index": "index_file",
+        // utilistion des filtres temporel du dashboard
+        %timefield%: "DEBUT_APPEL"
+        "index": "*Your Index Here*",
         "body": {
           "aggs": {
             "source": {
               "terms": {
-                "field": "source1"
+                "field": "OPERATEUR"
               },
               "aggs": {
-                "stk2": {
-                  "terms": {"field": "stack2"},
+                "destination": {
+                  "terms": {"field": "PAYS.DESTINATION"},
                   aggs: {
-                    stk3: {
+                    pays: {
                       terms: {
-                        field: "stack3"
+                        field: "DESTINATION_COMMERCIALE"
                       }
                     }
                   }
@@ -36,13 +36,13 @@
       },
       "format": {"property": "aggregations.source.buckets"},
       "transform": [
-        {"type": "flatten", "fields": ["stk2.buckets"], "as": ["flat1"]},
-        {"type": "flatten", "fields": ["flat1.stk3.buckets"], "as": ["flat2"]},
+        {"type": "flatten", "fields": ["destination.buckets"], "as": ["flat1"]},
+        {"type": "flatten", "fields": ["flat1.pays.buckets"], "as": ["flat2"]},
         {"type": "formula", "expr": "datum.key", "as": "stk1"},
         {"type": "formula", "expr": "datum.flat1.key", "as": "stk2"},
         {"type": "formula", "expr": "datum.flat2.key", "as": "stk3"},
-         {"type": "formula", "expr": "datum.flat1.doc_count", "as": "size1"}
-        {"type": "formula", "expr": "datum.flat2.doc_count", "as": "size2"}
+         {"type": "formula", "expr": "datum.flat1.doc_count", "as": "size"}
+        {"type": "formula", "expr": "datum.flat2.doc_count", "as": "size1"}
       ] 
     },
     
@@ -62,44 +62,22 @@
           "expr": "datum.stk1+datum.stk2+datum.stk3",
           "as": "key"
         },
-         {
-          "type": "formula",
-          "expr": "datum.stk1+datum.stk2+datum.stk3",
-          "as": "key2"
-        },
+         
         {
           "type": "fold",
           "fields": ["stk1", "stk2", "stk3"],
           "as": ["stack", "grpId"]
         },
-        /* Création d'une clé de tri, différente pour les piles stk1,stk2 et stk3.
-         Le séparateur d'espace garantit un ordre de tri correct dans certains cas d'angle. */
-         {
-          "type": "formula",
-          "expr": "datum.stack == 'stk1' ? datum.stk1+datum.stk2 : datum.stk2+datum.stk1",
-          "as": "sortField2"
-        },
-         {
-          "type": "formula",
-          "expr": "datum.stack == 'stk2' ? datum.stk2+datum.stk3 : datum.stk3+datum.stk2",
-          "as": "sortField1"
-        },
-        
        
         /* Calcule les positions y0 et y1 pour empiler les nœuds les uns sur les autres, indépendamment pour chaque pile, et en s'assurant qu'elles sont dans le bon ordre alphabétique à partir du haut (inversé sur l'axe y)
         */
         {
           "type": "stack",
           "groupby": ["stack"],
-          "sort": {"field": "sortField1", "order": "descending"},
-          "field": "size2"
+          "sort": {"field": "grpId"},
+          "field": "size"
         },
-        {
-          "type": "stack",
-          "groupby": ["stack"],
-          "sort": {"field": "sortField2", "order": "descending"},
-          "field": "size2"
-        },
+       
       // calcul du point central vertical pour chaque nœud, utilisé pour dessiner //les bords
 
         {"type": "formula", "expr": "(datum.y0+datum.y1)/2", "as": "yc"}
@@ -114,7 +92,7 @@
         {
           "type": "aggregate",
           "groupby": ["stack", "grpId"],
-          "fields": ["size2"],
+          "fields": ["size"],
           "ops": ["sum"],
           "as": ["total"]
         },
@@ -122,7 +100,7 @@
         {
           "type": "stack",
           "groupby": ["stack"],
-          "sort": {"field": "grpId", "order": "descending"},
+          "sort": {"field": "grpId", "order": "null"},
           "field": "total"
         },
         /*  projection des valeurs y0 et y1 sur les coordonnées de l'écran.
@@ -193,13 +171,13 @@
         */
         {
           "type": "formula",
-          "expr": "range('y')[0]-scale('y', datum.size2)",
+          "expr": "range('y')[0]-scale('y', datum.size)",
           "as": "strokeWidth"
         },
         // L'info-bulle a besoin du pourcentage de lien individuel de tout le trafic
         {
           "type": "formula",
-          "expr": "datum.size2/domain('y')[1]",
+          "expr": "datum.size/domain('y')[1]",
           "as": "percentage"
         }
       ]
@@ -216,9 +194,9 @@
         {
           "type": "lookup",
           "from": "destinationNodes2",
-          "key": "key2",
-          "fields": ["key2"],
-          "as": ["target2"]
+          "key": "key",
+          "fields": ["key"],
+          "as": ["target"]
         },
         // On calcul le chemin du lien entre les piles stk2 et stk3
         {
@@ -227,7 +205,7 @@
           "shape": "diagonal",
           "sourceY": {"expr": "scale('y', datum.yc)"},
           "sourceX": {"expr": "scale('x', 'stk2') + bandwidth('x')"},
-          "targetY": {"expr": "scale('y', datum.target2.yc)"},
+          "targetY": {"expr": "scale('y', datum.target.yc)"},
           "targetX": {"expr": "scale('x', 'stk3')"}
         },
         /* calcul de l'épaisseur du trait:
@@ -238,13 +216,13 @@
         */
         {
           "type": "formula",
-          "expr": "range('y')[0]-scale('y', datum.size2)",
+          "expr": "range('y')[0]-scale('y', datum.size)",
           "as": "strokeWidth"
         },
         // L'info-bulle a besoin du pourcentage de lien individuel de tout le trafic
         {
           "type": "formula",
-          "expr": "datum.size2/domain('y')[1]",
+          "expr": "datum.size/domain('y')[1]",
           "as": "percentage"
         }
       ]
@@ -257,8 +235,8 @@
       "type": "band",
       "range": "width",
       "domain": ["stk1", "stk2", "stk3"],
-      "paddingOuter": 0.02,
-      "paddingInner": 0.97,
+      "paddingOuter": 0.05,
+      "paddingInner": 0.95,
       // "padding":0.9
     },
     // cette échelle monte jusqu'à la valeur y1 la plus élevée de tous les nœuds
@@ -279,7 +257,7 @@
     {
       "name": "stackNames",
       "type": "ordinal",
-      "range": ["Source", "Stack1", "Stack2"],
+      "range": ["Operateurs Entrants", "Operateurs sortants", "Destinations Commerciales"],
       "domain": ["stk1", "stk2", "stk3"]
     }
   ],
@@ -323,7 +301,7 @@
           // lors de l'affichage de tout le trafic et du survol d'un pays,
           // met en évidence le trafic provenant de cet opérateur.
           "strokeOpacity": {
-            "signal": "!groupSelector && (groupHover.stk1 == datum.stk1 || groupHover.stk2 == datum.stk2 ) ? 0.9 : 0.3"
+            "signal": "!groupSelector && (groupHover.stk1 == datum.stk1 || groupHover.stk2 == datum.stk2  ) ? 0.9 : 0.3"
           },
           
           // s'assurer  que les arêtes sélectionnées au survol s'affichent en haut
@@ -332,7 +310,7 @@
           },
           // formatage de la chaîne de l'info-bulle
           "tooltip": {
-            "signal": "datum.stk1 + ' → ' + datum.stk2 + '    ' + format(datum.size2, ',.0f') + '   (' + format(datum.percentage, '.1%') + ')'"
+            "signal": "datum.stk1 + ' → ' + datum.stk2 + '    ' + format(datum.size, ',.0f') + '   (' + format(datum.percentage, '.1%') + ')'"
           }
         },
         // Surlignement simple au survol d'une seule ligne
@@ -370,25 +348,25 @@
           },
           // formatage de la chaîne de l'info-bulle
           "tooltip": {
-            "signal": "datum.stk2 + ' → ' + datum.stk3 + '    ' + format(datum.size2, ',.0f') + '   (' + format(datum.percentage, '1%') + ')'"
+            "signal": "datum.stk2 + ' → ' + datum.stk3 + '    ' + format(datum.size, ',.0f') + '   (' + format(datum.percentage, '1%') + ')'"
           }
         },
         // Surlignement simple au survol d'une seule ligne
-        "hover": {"strokeOpacity": {"value": 0.75}}
+        "hover": {"strokeOpacity": {"value": 1}}
       }
     },
     // dessine des groupes de pile
     
     {
       "type": "rect",
-      "from": {"data": "nodes"},
+      "from": {"data": "groups"},
       "encode": {
         "enter": {
              "strokeWidth": {"value": 1},
           "width": {"scale": "x", "band": 1},
           "x": {"scale": "x", "field": "stack"},
-          "y": {"field": "y0", "scale": "y"},
-          "y2": {"field": "y1", "scale": "y"}
+          "y": {"field": "scaledy0", "scale": "y"},
+          "y2": {"field": "scaledy1", "scale": "y"}
     }
     }}
     {
@@ -399,17 +377,18 @@
         "enter": {
           "fill": {"scale": "color", "field": "grpId"},
           "width": {"scale": "x", "band": 1}
+          stroke: {scale: "color", field: "grpId"}
         },
         "update": {
           "x": {"scale": "x", "field": "stack"},
           "y": {"field": "scaledY0"},
           "y2": {"field": "scaledY1"},
-          "fillOpacity": {"value": 1},
+          "fillOpacity": {"value": 0.9},
           "tooltip": {
             "signal": "datum.grpId + ': ' + format(datum.total, ',.0f') + '   (' + format(datum.percentage, '.1%') + ')'"
           }
         },
-        "hover": {"fillOpacity": {"value": 1}}
+        "hover": {"fillOpacity": {"value": 0.7}}
       }
     },
     // dessine des étiquettes de code de operateur sur le côté intérieur de la pile
@@ -430,6 +409,7 @@
           "baseline": {"value": "middle"},
           "fontWeight": {"value": "bold"},
           "fontSize": {"value": 9},
+          fill: {value: "black"}
           // n'affiche l'étiquette de texte que si la hauteur du groupe est suffisamment grande
           "text": {
             "signal": "abs(datum.scaledY0-datum.scaledY1) > 9 ? datum.grpId : ''"
@@ -477,7 +457,7 @@
               "width": {"field": {"group": "width"}}
             },
             // les groupes sont transparents par défaut
-            "update": {"opacity": {"value": 1}},
+            "update": {"opacity": {"value": 0.8}},
             "hover": {"fill": {"value": "#444444"}}
           },
           "marks": [
